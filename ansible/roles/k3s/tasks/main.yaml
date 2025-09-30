@@ -1,0 +1,326 @@
+---
+# K3s installation tasks
+# Installs and configures K3s Kubernetes distribution
+
+- name: Check if K3s is already installed
+  ansible.builtin.stat:
+    path: "{{ k3s_bin_dir }}/k3s"
+  register: k3s_binary
+  tags:
+    - k3s
+    - k3s-install
+
+- name: Get installed K3s version
+  ansible.builtin.command: "{{ k3s_bin_dir }}/k3s --version"
+  register: k3s_installed_version
+  changed_when: false
+  failed_when: false
+  when: k3s_binary.stat.exists
+  tags:
+    - k3s
+    - k3s-install
+
+- name: Display current K3s version
+  ansible.builtin.debug:
+    msg: "K3s is already installed: {{ k3s_installed_version.stdout_lines[0] }}"
+  when:
+    - k3s_binary.stat.exists
+    - k3s_installed_version.rc == 0
+  tags:
+    - k3s
+    - k3s-install
+
+- name: Create K3s config directory
+  ansible.builtin.file:
+    path: "{{ k3s_config_dir }}"
+    state: directory
+    mode: '0755'
+  become: true
+  tags:
+    - k3s
+    - k3s-install
+
+- name: Create K3s registry configuration
+  ansible.builtin.copy:
+    content: "{{ k3s_registries | to_nice_yaml }}"
+    dest: "{{ k3s_config_dir }}/registries.yaml"
+    mode: '0644'
+  become: true
+  when: k3s_registries | length > 0
+  notify: Restart K3s
+  tags:
+    - k3s
+    - k3s-config
+
+- name: Download K3s installation script
+  ansible.builtin.get_url:
+    url: "{{ k3s_install_script_url }}"
+    dest: /tmp/k3s-install.sh
+    mode: '0755'
+  tags:
+    - k3s
+    - k3s-install
+
+- name: Install K3s server
+  ansible.builtin.shell: |
+    INSTALL_K3S_VERSION="{{ k3s_version }}" \
+    INSTALL_K3S_EXEC="server {{ k3s_server_install_args }}" \
+    /tmp/k3s-install.sh
+  environment: "{{ k3s_env_vars }}"
+  become: true
+  when:
+    - k3s_service_type == "server"
+    - not k3s_binary.stat.exists or (k3s_installed_version.stdout is defined and k3s_version not in k3s_installed_version.stdout)
+  register: k3s_server_install
+  tags:
+    - k3s
+    - k3s-install
+
+- name: Install K3s agent
+  ansible.builtin.shell: |
+    INSTALL_K3S_VERSION="{{ k3s_version }}" \
+    K3S_URL="{{ k3s_server_url }}" \
+    K3S_TOKEN="{{ k3s_token }}" \
+    INSTALL_K3S_EXEC="agent {{ k3s_agent_install_args }}" \
+    /tmp/k3s-install.sh
+  environment: "{{ k3s_env_vars }}"
+  become: true
+  when:
+    - k3s_service_type == "agent"
+    - k3s_server_url != ""
+    - k3s_token != ""
+    - not k3s_binary.stat.exists or (k3s_installed_version.stdout is defined and k3s_version not in k3s_installed_version.stdout)
+  register: k3s_agent_install
+  tags:
+    - k3s
+    - k3s-install
+
+- name: Ensure K3s service is enabled and started
+  ansible.builtin.systemd:
+    name: "{{ k3s_service_name }}"
+    enabled: "{{ k3s_service_enabled }}"
+    state: "{{ k3s_service_state }}"
+  become: true
+  tags:
+    - k3s
+    - k3s-service
+
+- name: Wait for K3s to be ready
+  ansible.builtin.command: "{{ k3s_bin_dir }}/k3s kubectl get nodes"
+  register: k3s_nodes
+  until: k3s_nodes.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+  when:
+    - k3s_wait_for_ready | bool
+    - k3s_service_type == "server"
+  become: true
+  tags:
+    - k3s
+    - k3s-validation
+
+- name: Wait for all nodes to be Ready
+  ansible.builtin.shell: |
+    {{ k3s_bin_dir }}/k3s kubectl get nodes -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | grep -q "True"
+  register: nodes_ready
+  until: nodes_ready.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+  when:
+    - k3s_wait_for_ready | bool
+    - k3s_service_type == "server"
+  become: true
+  tags:
+    - k3s
+    - k3s-validation
+
+- name: Get K3s server token
+  ansible.builtin.slurp:
+    src: "{{ k3s_data_dir }}/server/node-token"
+  register: k3s_server_token
+  when: k3s_service_type == "server"
+  become: true
+  tags:
+    - k3s
+    - k3s-token
+
+- name: Display K3s server token
+  ansible.builtin.debug:
+    msg: "K3s server token: {{ k3s_server_token.content | b64decode | trim }}"
+  when:
+    - k3s_service_type == "server"
+    - k3s_server_token is defined
+  tags:
+    - k3s
+    - k3s-token
+
+- name: Create local kubeconfig directory
+  ansible.builtin.file:
+    path: "{{ local_kubeconfig_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: fetch_kubeconfig | bool
+  tags:
+    - k3s
+    - k3s-kubeconfig
+
+- name: Fetch K3s kubeconfig
+  ansible.builtin.fetch:
+    src: "{{ k3s_kubeconfig }}"
+    dest: "/tmp/k3s-{{ inventory_hostname }}.yaml"
+    flat: yes
+  become: true
+  when:
+    - fetch_kubeconfig | bool
+    - k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-kubeconfig
+
+- name: Update kubeconfig server address
+  ansible.builtin.replace:
+    path: "/tmp/k3s-{{ inventory_hostname }}.yaml"
+    regexp: 'https://127.0.0.1:6443'
+    replace: "https://{{ ansible_host }}:6443"
+  delegate_to: localhost
+  become: false
+  when:
+    - fetch_kubeconfig | bool
+    - k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-kubeconfig
+
+- name: Merge kubeconfig to local config
+  ansible.builtin.shell: |
+    KUBECONFIG="{{ local_kubeconfig_file }}:/tmp/k3s-{{ inventory_hostname }}.yaml" \
+    kubectl config view --flatten > /tmp/merged-kubeconfig && \
+    mv /tmp/merged-kubeconfig {{ local_kubeconfig_file }}
+  delegate_to: localhost
+  become: false
+  when:
+    - fetch_kubeconfig | bool
+    - k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-kubeconfig
+
+- name: Set correct permissions on kubeconfig
+  ansible.builtin.file:
+    path: "{{ local_kubeconfig_file }}"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: fetch_kubeconfig | bool
+  tags:
+    - k3s
+    - k3s-kubeconfig
+
+- name: Verify K3s cluster is functional
+  ansible.builtin.command: "{{ k3s_bin_dir }}/k3s kubectl get nodes -o wide"
+  register: k3s_cluster_status
+  changed_when: false
+  become: true
+  when: k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-validation
+
+- name: Display cluster status
+  ansible.builtin.debug:
+    var: k3s_cluster_status.stdout_lines
+  when:
+    - k3s_service_type == "server"
+    - k3s_cluster_status is defined
+  tags:
+    - k3s
+    - k3s-validation
+
+- name: Get K3s cluster info
+  ansible.builtin.command: "{{ k3s_bin_dir }}/k3s kubectl cluster-info"
+  register: k3s_cluster_info
+  changed_when: false
+  become: true
+  when: k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-validation
+
+- name: Display cluster info
+  ansible.builtin.debug:
+    var: k3s_cluster_info.stdout_lines
+  when:
+    - k3s_service_type == "server"
+    - k3s_cluster_info is defined
+  tags:
+    - k3s
+    - k3s-validation
+
+- name: Create backup directory
+  ansible.builtin.file:
+    path: "{{ k3s_backup_dir }}"
+    state: directory
+    mode: '0755'
+  become: true
+  when:
+    - k3s_backup_enabled | bool
+    - k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-backup
+
+- name: Create K3s backup script
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+      # K3s backup script
+      BACKUP_DIR="{{ k3s_backup_dir }}"
+      TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+      BACKUP_FILE="$BACKUP_DIR/k3s-backup-$TIMESTAMP.tar.gz"
+
+      # Create backup
+      tar -czf "$BACKUP_FILE" \
+        {{ k3s_config_dir }} \
+        {{ k3s_data_dir }}/server/db \
+        2>/dev/null
+
+      # Remove old backups
+      find "$BACKUP_DIR" -name "k3s-backup-*.tar.gz" -mtime +{{ k3s_backup_retention_days }} -delete
+
+      echo "Backup completed: $BACKUP_FILE"
+    dest: /usr/local/bin/k3s-backup.sh
+    mode: '0755'
+  become: true
+  when:
+    - k3s_backup_enabled | bool
+    - k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-backup
+
+- name: Create cron job for K3s backup
+  ansible.builtin.cron:
+    name: "K3s backup"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/k3s-backup.sh >> /var/log/k3s-backup.log 2>&1"
+  become: true
+  when:
+    - k3s_backup_enabled | bool
+    - k3s_service_type == "server"
+  tags:
+    - k3s
+    - k3s-backup
+
+- name: Clean up installation script
+  ansible.builtin.file:
+    path: /tmp/k3s-install.sh
+    state: absent
+  tags:
+    - k3s
+    - cleanup

@@ -1,0 +1,210 @@
+---
+# Helm installation tasks
+# Installs Helm package manager for Kubernetes
+
+- name: Check if Helm is already installed
+  ansible.builtin.stat:
+    path: "{{ helm_install_dir }}/helm"
+  register: helm_binary
+  tags:
+    - helm
+    - helm-install
+
+- name: Get installed Helm version
+  ansible.builtin.command: "{{ helm_install_dir }}/helm version --short"
+  register: helm_installed_version
+  changed_when: false
+  failed_when: false
+  when: helm_binary.stat.exists
+  tags:
+    - helm
+    - helm-install
+
+- name: Display current Helm version
+  ansible.builtin.debug:
+    msg: "Helm is already installed: {{ helm_installed_version.stdout }}"
+  when:
+    - helm_binary.stat.exists
+    - helm_installed_version.rc == 0
+  tags:
+    - helm
+    - helm-install
+
+- name: Create temporary directory for Helm download
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: helm
+  register: helm_temp_dir
+  when: not helm_binary.stat.exists or (helm_installed_version.stdout is defined and helm_version not in helm_installed_version.stdout)
+  tags:
+    - helm
+    - helm-install
+
+- name: Download Helm archive
+  ansible.builtin.get_url:
+    url: "{{ helm_download_url }}"
+    dest: "{{ helm_temp_dir.path }}/helm.tar.gz"
+    mode: '0644'
+  when: helm_temp_dir is defined and helm_temp_dir.path is defined
+  tags:
+    - helm
+    - helm-install
+
+- name: Extract Helm archive
+  ansible.builtin.unarchive:
+    src: "{{ helm_temp_dir.path }}/helm.tar.gz"
+    dest: "{{ helm_temp_dir.path }}"
+    remote_src: yes
+  when: helm_temp_dir is defined and helm_temp_dir.path is defined
+  tags:
+    - helm
+    - helm-install
+
+- name: Install Helm binary
+  ansible.builtin.copy:
+    src: "{{ helm_temp_dir.path }}/linux-amd64/helm"
+    dest: "{{ helm_install_dir }}/helm"
+    mode: '0755'
+    remote_src: yes
+  become: true
+  when: helm_temp_dir is defined and helm_temp_dir.path is defined
+  tags:
+    - helm
+    - helm-install
+
+- name: Clean up temporary directory
+  ansible.builtin.file:
+    path: "{{ helm_temp_dir.path }}"
+    state: absent
+  when: helm_temp_dir is defined and helm_temp_dir.path is defined
+  tags:
+    - helm
+    - cleanup
+
+- name: Verify Helm installation
+  ansible.builtin.command: "{{ helm_install_dir }}/helm version"
+  register: helm_version_output
+  changed_when: false
+  tags:
+    - helm
+    - helm-validation
+
+- name: Display Helm version
+  ansible.builtin.debug:
+    var: helm_version_output.stdout_lines
+  tags:
+    - helm
+    - helm-validation
+
+- name: Set up Helm environment for user
+  ansible.builtin.blockinfile:
+    path: "{{ ansible_env.HOME }}/.bashrc"
+    block: |
+      # Helm environment
+      export HELM_HOME="{{ ansible_env.HOME }}/.helm"
+      source <(helm completion bash)
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - HELM"
+    create: yes
+  when: ansible_env.HOME is defined
+  tags:
+    - helm
+    - helm-config
+
+- name: Wait for Kubernetes API to be available
+  ansible.builtin.command: "{{ k3s_bin_dir }}/kubectl cluster-info"
+  register: k8s_api_check
+  until: k8s_api_check.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+  become: true
+  tags:
+    - helm
+    - helm-validation
+
+- name: Add Helm repositories
+  ansible.builtin.command: >
+    {{ helm_install_dir }}/helm repo add {{ item.name }} {{ item.url }}
+  environment:
+    KUBECONFIG: "{{ k3s_kubeconfig }}"
+  become: true
+  loop: "{{ helm_repositories }}"
+  register: helm_repo_add
+  changed_when: "'has been added' in helm_repo_add.stdout"
+  failed_when: false
+  tags:
+    - helm
+    - helm-repos
+
+- name: Update Helm repositories
+  ansible.builtin.command: "{{ helm_install_dir }}/helm repo update"
+  environment:
+    KUBECONFIG: "{{ k3s_kubeconfig }}"
+  become: true
+  changed_when: false
+  tags:
+    - helm
+    - helm-repos
+
+- name: List Helm repositories
+  ansible.builtin.command: "{{ helm_install_dir }}/helm repo list"
+  environment:
+    KUBECONFIG: "{{ k3s_kubeconfig }}"
+  become: true
+  register: helm_repo_list
+  changed_when: false
+  tags:
+    - helm
+    - helm-validation
+
+- name: Display Helm repositories
+  ansible.builtin.debug:
+    var: helm_repo_list.stdout_lines
+  tags:
+    - helm
+    - helm-validation
+
+- name: Create Helm cache directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.cache/helm"
+    state: directory
+    mode: '0755'
+  tags:
+    - helm
+    - helm-config
+
+- name: Create Helm config directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.config/helm"
+    state: directory
+    mode: '0755'
+  tags:
+    - helm
+    - helm-config
+
+- name: Set up bash completion for Helm
+  ansible.builtin.shell: "{{ helm_install_dir }}/helm completion bash > /etc/bash_completion.d/helm"
+  become: true
+  args:
+    creates: /etc/bash_completion.d/helm
+  tags:
+    - helm
+    - helm-config
+
+- name: Verify Helm can communicate with cluster
+  ansible.builtin.command: "{{ helm_install_dir }}/helm list --all-namespaces"
+  environment:
+    KUBECONFIG: "{{ k3s_kubeconfig }}"
+  become: true
+  register: helm_list
+  changed_when: false
+  tags:
+    - helm
+    - helm-validation
+
+- name: Display Helm releases
+  ansible.builtin.debug:
+    msg: "{{ helm_list.stdout_lines if helm_list.stdout_lines | length > 0 else 'No Helm releases found' }}"
+  tags:
+    - helm
+    - helm-validation

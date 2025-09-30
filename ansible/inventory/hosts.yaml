@@ -1,0 +1,8 @@
+all:
+  children:
+    k3s_servers:
+      hosts:
+        k3s-node-01:
+          ansible_host: 192.168.1.41  # Change to your node IP
+          ansible_user: james         # Change to your SSH user
+          ansible_ssh_private_key_file: ~/.ssh/id_ed25519

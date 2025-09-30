@@ -1,0 +1,251 @@
+---
+# Node.js installation tasks
+# Installs Node.js and npm using NodeSource repository
+
+- name: Check if Node.js is already installed
+  ansible.builtin.command: node --version
+  register: node_installed_version
+  changed_when: false
+  failed_when: false
+  tags:
+    - node
+    - node-install
+
+- name: Display current Node.js version
+  ansible.builtin.debug:
+    msg: "Node.js is already installed: {{ node_installed_version.stdout }}"
+  when:
+    - node_installed_version.rc == 0
+  tags:
+    - node
+    - node-install
+
+- name: Check if npm is already installed
+  ansible.builtin.command: npm --version
+  register: npm_installed_version
+  changed_when: false
+  failed_when: false
+  tags:
+    - node
+    - node-install
+
+- name: Install Node.js using NodeSource repository
+  block:
+    - name: Download NodeSource setup script
+      ansible.builtin.get_url:
+        url: "https://deb.nodesource.com/setup_{{ nodejs_version }}.x"
+        dest: /tmp/nodesource_setup.sh
+        mode: '0755'
+
+    - name: Run NodeSource setup script
+      ansible.builtin.command: /tmp/nodesource_setup.sh
+      become: true
+
+    - name: Install Node.js package
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: yes
+      become: true
+
+    - name: Clean up NodeSource setup script
+      ansible.builtin.file:
+        path: /tmp/nodesource_setup.sh
+        state: absent
+  when:
+    - nodejs_install_method == "nodesource"
+    - node_installed_version.rc != 0 or (node_installed_version.stdout is defined and nodejs_version | string not in node_installed_version.stdout)
+  tags:
+    - node
+    - node-install
+
+- name: Install Node.js using NVM
+  block:
+    - name: Check if NVM is installed
+      ansible.builtin.stat:
+        path: "{{ ansible_env.HOME }}/.nvm/nvm.sh"
+      register: nvm_installed
+
+    - name: Download and install NVM
+      ansible.builtin.shell: >
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+      args:
+        creates: "{{ ansible_env.HOME }}/.nvm/nvm.sh"
+      when: not nvm_installed.stat.exists
+
+    - name: Install Node.js via NVM
+      ansible.builtin.shell: |
+        source {{ ansible_env.HOME }}/.nvm/nvm.sh
+        nvm install {{ nodejs_version }}
+        nvm use {{ nodejs_version }}
+        nvm alias default {{ nodejs_version }}
+      args:
+        executable: /bin/bash
+      when: node_installed_version.rc != 0
+  when: nodejs_install_method == "nvm"
+  tags:
+    - node
+    - node-install
+    - nvm
+
+- name: Verify Node.js installation
+  ansible.builtin.command: node --version
+  register: node_version_output
+  changed_when: false
+  tags:
+    - node
+    - node-validation
+
+- name: Display Node.js version
+  ansible.builtin.debug:
+    msg: "Node.js version: {{ node_version_output.stdout }}"
+  tags:
+    - node
+    - node-validation
+
+- name: Verify npm installation
+  ansible.builtin.command: npm --version
+  register: npm_version_output
+  changed_when: false
+  tags:
+    - node
+    - node-validation
+
+- name: Display npm version
+  ansible.builtin.debug:
+    msg: "npm version: {{ npm_version_output.stdout }}"
+  tags:
+    - node
+    - node-validation
+
+- name: Update npm to latest version
+  ansible.builtin.npm:
+    name: npm
+    global: yes
+    state: latest
+  become: true
+  when: nodejs_install_method == "nodesource"
+  tags:
+    - node
+    - npm
+
+- name: Install global Node.js packages
+  ansible.builtin.npm:
+    name: "{{ item }}"
+    global: yes
+    state: present
+  become: true
+  loop: "{{ nodejs_packages }}"
+  when:
+    - nodejs_packages is defined
+    - nodejs_packages | length > 0
+  tags:
+    - node
+    - npm
+    - node-packages
+
+- name: Verify Yarn installation
+  ansible.builtin.command: yarn --version
+  register: yarn_version_output
+  changed_when: false
+  failed_when: false
+  when: "'yarn' in nodejs_packages"
+  tags:
+    - node
+    - node-validation
+
+- name: Display Yarn version
+  ansible.builtin.debug:
+    msg: "Yarn version: {{ yarn_version_output.stdout }}"
+  when:
+    - "'yarn' in nodejs_packages"
+    - yarn_version_output.rc == 0
+  tags:
+    - node
+    - node-validation
+
+- name: Verify PM2 installation
+  ansible.builtin.command: pm2 --version
+  register: pm2_version_output
+  changed_when: false
+  failed_when: false
+  when: "'pm2' in nodejs_packages"
+  tags:
+    - node
+    - node-validation
+
+- name: Display PM2 version
+  ansible.builtin.debug:
+    msg: "PM2 version: {{ pm2_version_output.stdout }}"
+  when:
+    - "'pm2' in nodejs_packages"
+    - pm2_version_output.rc == 0
+  tags:
+    - node
+    - node-validation
+
+- name: Set up npm global packages directory for user
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.npm-global"
+    state: directory
+    mode: '0755'
+  tags:
+    - node
+    - npm-config
+
+- name: Configure npm to use global packages directory
+  ansible.builtin.command: npm config set prefix '{{ ansible_env.HOME }}/.npm-global'
+  changed_when: false
+  tags:
+    - node
+    - npm-config
+
+- name: Add npm global bin to PATH
+  ansible.builtin.lineinfile:
+    path: "{{ ansible_env.HOME }}/.bashrc"
+    line: 'export PATH="{{ ansible_env.HOME }}/.npm-global/bin:$PATH"'
+    regexp: '^export PATH=.*\.npm-global/bin'
+    state: present
+    create: yes
+  tags:
+    - node
+    - npm-config
+
+- name: Set up bash completion for npm
+  ansible.builtin.shell: npm completion > /etc/bash_completion.d/npm
+  become: true
+  args:
+    creates: /etc/bash_completion.d/npm
+  when: nodejs_install_method == "nodesource"
+  tags:
+    - node
+    - npm-config
+
+- name: Create npm cache directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.npm"
+    state: directory
+    mode: '0755'
+  tags:
+    - node
+    - npm-config
+
+- name: Display installed global packages
+  ansible.builtin.command: npm list -g --depth=0
+  register: npm_global_list
+  changed_when: false
+  become: true
+  when: nodejs_install_method == "nodesource"
+  tags:
+    - node
+    - node-validation
+
+- name: Show global packages
+  ansible.builtin.debug:
+    var: npm_global_list.stdout_lines
+  when:
+    - nodejs_install_method == "nodesource"
+    - npm_global_list is defined
+  tags:
+    - node
+    - node-validation

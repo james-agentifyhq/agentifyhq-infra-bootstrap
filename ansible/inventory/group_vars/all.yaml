@@ -1,0 +1,120 @@
+---
+# Global variables for all hosts
+# These variables apply to all hosts in the inventory
+
+# ==========================================
+# K3s Configuration
+# ==========================================
+k3s_version: "v1.34.1+k3s1"
+k3s_install_script_url: "https://get.k3s.io"
+
+# K3s installation options
+# Disable Traefik ingress controller (we'll use our own)
+k3s_server_install_args: >-
+  --disable traefik
+  --write-kubeconfig-mode 644
+  --tls-san {{ ansible_host }}
+  --node-name {{ inventory_hostname }}
+
+# K3s directories
+k3s_config_dir: "/etc/rancher/k3s"
+k3s_data_dir: "/var/lib/rancher/k3s"
+k3s_kubeconfig: "{{ k3s_config_dir }}/k3s.yaml"
+
+# Local kubeconfig path (on control machine)
+local_kubeconfig_dir: "~/.kube"
+local_kubeconfig_file: "{{ local_kubeconfig_dir }}/config"
+
+# ==========================================
+# Helm Configuration
+# ==========================================
+helm_version: "v3.13.3"
+helm_install_dir: "/usr/local/bin"
+helm_download_url: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+
+# Helm repositories to add
+helm_repositories:
+  - name: stable
+    url: https://charts.helm.sh/stable
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+  - name: ingress-nginx
+    url: https://kubernetes.github.io/ingress-nginx
+  - name: jetstack
+    url: https://charts.jetstack.io
+
+# ==========================================
+# Node.js Configuration
+# ==========================================
+nodejs_version: "20"
+nodejs_install_method: "nodesource"  # Options: nodesource, nvm
+nodejs_packages:
+  - yarn
+  - pm2
+
+# ==========================================
+# System Configuration
+# ==========================================
+# Timezone
+system_timezone: "UTC"
+
+# Required system packages
+system_packages:
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - net-tools
+  - gnupg
+  - ca-certificates
+  - apt-transport-https
+  - software-properties-common
+  - python3-pip
+  - jq
+  - cron
+
+# Python packages
+python_packages:
+  - kubernetes
+  - PyYAML
+  - jsonpatch
+
+# ==========================================
+# Network Configuration
+# ==========================================
+# Firewall rules (if using ufw)
+enable_firewall: false
+firewall_allowed_ports:
+  - "6443/tcp"   # Kubernetes API
+  - "10250/tcp"  # Kubelet
+  - "22/tcp"     # SSH
+
+# ==========================================
+# Backup Configuration
+# ==========================================
+k3s_backup_enabled: true
+k3s_backup_dir: "/var/backups/k3s"
+k3s_backup_retention_days: 7
+
+# ==========================================
+# Security Configuration
+# ==========================================
+# Disable swap for Kubernetes
+disable_swap: true
+
+# SELinux (if applicable)
+selinux_state: "disabled"
+
+# ==========================================
+# Optional Features
+# ==========================================
+install_helm: true
+install_nodejs: false
+install_docker_cli: false
+
+# ==========================================
+# Logging and Monitoring
+# ==========================================
+log_level: "info"
+enable_audit_log: false

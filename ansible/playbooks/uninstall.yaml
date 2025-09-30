@@ -1,0 +1,448 @@
+---
+# Uninstall playbook
+# Removes K3s, Helm, and optionally Node.js from target systems
+
+- name: Uninstall Infrastructure Components
+  hosts: k3s_servers
+  gather_facts: yes
+  become: yes
+
+  vars_prompt:
+    - name: confirm_uninstall
+      prompt: "Are you sure you want to uninstall all components? This action cannot be undone. Type 'yes' to confirm"
+      private: no
+
+  pre_tasks:
+    - name: Verify uninstall confirmation
+      ansible.builtin.assert:
+        that:
+          - confirm_uninstall == "yes"
+        fail_msg: "Uninstall cancelled. You must type 'yes' to proceed."
+        success_msg: "Uninstall confirmed. Proceeding..."
+      tags: always
+
+    - name: Display uninstall information
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Infrastructure Uninstall Playbook"
+          - "=========================================="
+          - "WARNING: This will remove all installed components"
+          - "Target Host: {{ inventory_hostname }}"
+          - "IP Address: {{ ansible_host }}"
+          - "=========================================="
+      tags: always
+
+    - name: Check connectivity
+      ansible.builtin.ping:
+      tags: always
+
+  tasks:
+    # Backup before uninstall
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "/var/backups/k3s-uninstall-{{ ansible_date_time.epoch }}"
+        state: directory
+        mode: '0755'
+      register: backup_dir
+      tags:
+        - backup
+        - uninstall
+
+    - name: Backup K3s configuration and data
+      ansible.builtin.shell: |
+        if [ -d "{{ k3s_config_dir }}" ]; then
+          tar -czf {{ backup_dir.path }}/k3s-config-backup.tar.gz {{ k3s_config_dir }} 2>/dev/null || true
+        fi
+        if [ -d "{{ k3s_data_dir }}" ]; then
+          tar -czf {{ backup_dir.path }}/k3s-data-backup.tar.gz {{ k3s_data_dir }}/server/db 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      register: backup_result
+      failed_when: false
+      tags:
+        - backup
+        - uninstall
+
+    - name: Backup kubeconfig
+      ansible.builtin.copy:
+        src: "{{ k3s_kubeconfig }}"
+        dest: "{{ backup_dir.path }}/k3s.yaml"
+        remote_src: yes
+        mode: '0600'
+      failed_when: false
+      when: k3s_service_type == "server"
+      tags:
+        - backup
+        - uninstall
+
+    - name: Display backup location
+      ansible.builtin.debug:
+        msg: "Backup saved to: {{ backup_dir.path }}"
+      tags:
+        - backup
+        - uninstall
+
+    # Uninstall K3s
+    - name: Check if K3s uninstall script exists
+      ansible.builtin.stat:
+        path: "{{ k3s_uninstall_script }}"
+      register: k3s_uninstall_exists
+      tags:
+        - k3s
+        - uninstall
+
+    - name: Run K3s uninstall script
+      ansible.builtin.command: "{{ k3s_uninstall_script }}"
+      when: k3s_uninstall_exists.stat.exists
+      register: k3s_uninstall_result
+      failed_when: false
+      tags:
+        - k3s
+        - uninstall
+
+    - name: Display K3s uninstall result
+      ansible.builtin.debug:
+        msg: "{{ k3s_uninstall_result.stdout_lines | default(['K3s uninstall script not found']) }}"
+      tags:
+        - k3s
+        - uninstall
+
+    - name: Check if K3s agent uninstall script exists
+      ansible.builtin.stat:
+        path: "/usr/local/bin/k3s-agent-uninstall.sh"
+      register: k3s_agent_uninstall_exists
+      tags:
+        - k3s
+        - uninstall
+
+    - name: Run K3s agent uninstall script
+      ansible.builtin.command: /usr/local/bin/k3s-agent-uninstall.sh
+      when: k3s_agent_uninstall_exists.stat.exists
+      register: k3s_agent_uninstall_result
+      failed_when: false
+      tags:
+        - k3s
+        - uninstall
+
+    - name: Remove K3s directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ k3s_config_dir }}"
+        - "{{ k3s_data_dir }}"
+        - /var/lib/rancher
+        - /etc/rancher
+      failed_when: false
+      tags:
+        - k3s
+        - uninstall
+        - cleanup
+
+    - name: Remove K3s binaries
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ k3s_bin_dir }}/k3s"
+        - "{{ k3s_bin_dir }}/kubectl"
+        - "{{ k3s_bin_dir }}/crictl"
+        - "{{ k3s_bin_dir }}/ctr"
+      failed_when: false
+      tags:
+        - k3s
+        - uninstall
+        - cleanup
+
+    - name: Remove K3s systemd service files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/k3s.service
+        - /etc/systemd/system/k3s-agent.service
+        - /etc/systemd/system/k3s.service.env
+      failed_when: false
+      tags:
+        - k3s
+        - uninstall
+        - cleanup
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: yes
+      tags:
+        - k3s
+        - uninstall
+        - cleanup
+
+    # Uninstall Helm
+    - name: Remove Helm binary
+      ansible.builtin.file:
+        path: "{{ helm_install_dir }}/helm"
+        state: absent
+      failed_when: false
+      tags:
+        - helm
+        - uninstall
+
+    - name: Remove Helm directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ ansible_env.HOME }}/.helm"
+        - "{{ ansible_env.HOME }}/.cache/helm"
+        - "{{ ansible_env.HOME }}/.config/helm"
+      failed_when: false
+      tags:
+        - helm
+        - uninstall
+        - cleanup
+
+    - name: Remove Helm bash completion
+      ansible.builtin.file:
+        path: /etc/bash_completion.d/helm
+        state: absent
+      failed_when: false
+      tags:
+        - helm
+        - uninstall
+        - cleanup
+
+    - name: Remove Helm environment from bashrc
+      ansible.builtin.blockinfile:
+        path: "{{ ansible_env.HOME }}/.bashrc"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - HELM"
+        state: absent
+      failed_when: false
+      tags:
+        - helm
+        - uninstall
+        - cleanup
+
+    # Uninstall Node.js (optional)
+    - name: Prompt for Node.js removal
+      ansible.builtin.pause:
+        prompt: "Do you want to remove Node.js? (yes/no)"
+      register: remove_nodejs
+      when: ansible_env.HOME is defined
+      tags:
+        - node
+        - uninstall
+
+    - name: Remove Node.js package
+      ansible.builtin.apt:
+        name: nodejs
+        state: absent
+        purge: yes
+      when:
+        - remove_nodejs.user_input | default('no') == 'yes'
+        - ansible_os_family == "Debian"
+      tags:
+        - node
+        - uninstall
+
+    - name: Remove NodeSource repository
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/nodesource.list
+        - /etc/apt/keyrings/nodesource.gpg
+      when: remove_nodejs.user_input | default('no') == 'yes'
+      failed_when: false
+      tags:
+        - node
+        - uninstall
+        - cleanup
+
+    - name: Remove NVM
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/.nvm"
+        state: absent
+      when: remove_nodejs.user_input | default('no') == 'yes'
+      failed_when: false
+      tags:
+        - node
+        - uninstall
+        - cleanup
+
+    - name: Remove npm global directory
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/.npm-global"
+        state: absent
+      when: remove_nodejs.user_input | default('no') == 'yes'
+      failed_when: false
+      tags:
+        - node
+        - uninstall
+        - cleanup
+
+    - name: Remove npm cache
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/.npm"
+        state: absent
+      when: remove_nodejs.user_input | default('no') == 'yes'
+      failed_when: false
+      tags:
+        - node
+        - uninstall
+        - cleanup
+
+    - name: Remove Node.js from PATH in bashrc
+      ansible.builtin.lineinfile:
+        path: "{{ ansible_env.HOME }}/.bashrc"
+        regexp: '^export PATH=.*\.npm-global/bin'
+        state: absent
+      when: remove_nodejs.user_input | default('no') == 'yes'
+      failed_when: false
+      tags:
+        - node
+        - uninstall
+        - cleanup
+
+    # Clean up kernel modules and sysctl settings
+    - name: Remove kernel modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - br_netfilter
+      failed_when: false
+      tags:
+        - cleanup
+        - uninstall
+
+    - name: Remove sysctl configurations
+      ansible.builtin.file:
+        path: /etc/modules-load.d/k8s.conf
+        state: absent
+      failed_when: false
+      tags:
+        - cleanup
+        - uninstall
+
+    - name: Re-enable swap if it was disabled
+      ansible.builtin.shell: |
+        sed -i 's/^# \(.*swap.*\)$/\1/' /etc/fstab
+        swapon -a
+      failed_when: false
+      tags:
+        - cleanup
+        - uninstall
+
+    # Clean up backup directory if empty
+    - name: Remove old backup directories older than 30 days
+      ansible.builtin.find:
+        paths: /var/backups
+        patterns: "k3s-uninstall-*"
+        file_type: directory
+        age: 30d
+      register: old_backups
+      tags:
+        - cleanup
+        - uninstall
+
+    - name: Delete old backup directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_backups.files }}"
+      when: old_backups.files | length > 0
+      failed_when: false
+      tags:
+        - cleanup
+        - uninstall
+
+    # Remove local kubeconfig
+    - name: Remove K3s context from local kubeconfig
+      ansible.builtin.shell: |
+        if [ -f "{{ local_kubeconfig_file }}" ]; then
+          kubectl config delete-context default 2>/dev/null || true
+          kubectl config delete-cluster default 2>/dev/null || true
+        fi
+      delegate_to: localhost
+      become: false
+      failed_when: false
+      tags:
+        - cleanup
+        - uninstall
+
+  post_tasks:
+    - name: Verify K3s removal
+      ansible.builtin.command: which k3s
+      register: k3s_check
+      changed_when: false
+      failed_when: false
+      tags:
+        - validation
+        - uninstall
+
+    - name: Display K3s removal status
+      ansible.builtin.debug:
+        msg: "{{ 'K3s successfully removed' if k3s_check.rc != 0 else 'WARNING: K3s binary still found at ' + k3s_check.stdout }}"
+      tags:
+        - validation
+        - uninstall
+
+    - name: Verify Helm removal
+      ansible.builtin.command: which helm
+      register: helm_check
+      changed_when: false
+      failed_when: false
+      tags:
+        - validation
+        - uninstall
+
+    - name: Display Helm removal status
+      ansible.builtin.debug:
+        msg: "{{ 'Helm successfully removed' if helm_check.rc != 0 else 'WARNING: Helm binary still found at ' + helm_check.stdout }}"
+      tags:
+        - validation
+        - uninstall
+
+    - name: Display uninstall summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Uninstall Complete!"
+          - "=========================================="
+          - "Components removed:"
+          - "  - K3s: {{ 'Yes' if k3s_check.rc != 0 else 'Partial' }}"
+          - "  - Helm: {{ 'Yes' if helm_check.rc != 0 else 'Partial' }}"
+          - "  - Node.js: {{ 'Yes' if remove_nodejs.user_input | default('no') == 'yes' else 'Skipped' }}"
+          - ""
+          - "Backup location: {{ backup_dir.path }}"
+          - ""
+          - "You may need to:"
+          - "  1. Reboot the system to complete cleanup"
+          - "  2. Manually remove any remaining files"
+          - "  3. Review backup files before deleting"
+          - "=========================================="
+      tags: always
+
+    - name: Save uninstall summary
+      ansible.builtin.copy:
+        content: |
+          Infrastructure Uninstall Summary
+          =================================
+          Date: {{ ansible_date_time.iso8601 }}
+          Host: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+
+          Components Removed:
+          - K3s: {{ 'Yes' if k3s_check.rc != 0 else 'Partial' }}
+          - Helm: {{ 'Yes' if helm_check.rc != 0 else 'Partial' }}
+          - Node.js: {{ 'Yes' if remove_nodejs.user_input | default('no') == 'yes' else 'Skipped' }}
+
+          Backup Location: {{ backup_dir.path }}
+
+          Notes:
+          - Reboot recommended to complete cleanup
+          - Review and remove backup files after verification
+        dest: "{{ backup_dir.path }}/uninstall-summary.txt"
+        mode: '0644'
+      tags: always

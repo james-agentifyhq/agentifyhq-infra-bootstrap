@@ -1,0 +1,92 @@
+---
+# Default variables for K3s role
+# These can be overridden in group_vars or host_vars
+
+# K3s version to install
+k3s_version: "v1.28.5+k3s1"
+
+# K3s installation script URL
+k3s_install_script_url: "https://get.k3s.io"
+
+# K3s server installation arguments
+# By default, disable Traefik and set up basic security
+k3s_server_install_args: >-
+  --disable traefik
+  --write-kubeconfig-mode 644
+
+# K3s agent installation arguments (for worker nodes)
+k3s_agent_install_args: ""
+
+# K3s service type (server or agent)
+k3s_service_type: "server"
+
+# K3s directories
+k3s_config_dir: "/etc/rancher/k3s"
+k3s_data_dir: "/var/lib/rancher/k3s"
+k3s_bin_dir: "/usr/local/bin"
+k3s_systemd_dir: "/etc/systemd/system"
+
+# K3s kubeconfig file
+k3s_kubeconfig: "{{ k3s_config_dir }}/k3s.yaml"
+
+# Local kubeconfig settings (on control machine)
+local_kubeconfig_dir: "~/.kube"
+local_kubeconfig_file: "{{ local_kubeconfig_dir }}/config"
+fetch_kubeconfig: true
+
+# K3s service configuration
+k3s_service_name: "k3s"
+k3s_service_enabled: true
+k3s_service_state: "started"
+
+# K3s token (for joining nodes to cluster)
+# Leave empty to auto-generate on first server
+k3s_token: ""
+
+# Server URL (for agent nodes to join)
+k3s_server_url: ""
+
+# Wait for K3s to be ready
+k3s_wait_for_ready: true
+k3s_ready_timeout: 300
+
+# Backup configuration
+k3s_backup_enabled: false
+k3s_backup_dir: "/var/backups/k3s"
+k3s_backup_schedule: "0 2 * * *"  # Daily at 2 AM
+
+# Uninstall script location
+k3s_uninstall_script: "/usr/local/bin/k3s-uninstall.sh"
+
+# CNI (Container Network Interface) settings
+k3s_cni: "flannel"  # Options: flannel, calico, cilium
+
+# Additional environment variables for K3s
+k3s_env_vars: {}
+#  HTTP_PROXY: "http://proxy.example.com:8080"
+#  HTTPS_PROXY: "http://proxy.example.com:8080"
+#  NO_PROXY: "localhost,127.0.0.1"
+
+# SELinux settings
+k3s_selinux: false
+
+# Private registry configuration
+k3s_registries: {}
+#  mirrors:
+#    docker.io:
+#      endpoint:
+#        - "https://registry.example.com"
+
+# TLS SANs (Subject Alternative Names) for API server certificate
+k3s_tls_sans: []
+#  - "k3s.example.com"
+#  - "192.168.1.100"
+
+# Node labels
+k3s_node_labels: []
+#  - "node.kubernetes.io/role=worker"
+#  - "environment=production"
+
+# Node taints
+k3s_node_taints: []
+#  - "key=value:NoSchedule"

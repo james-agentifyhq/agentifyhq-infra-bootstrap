@@ -1,0 +1,206 @@
+---
+# K3s-only installation playbook
+# Installs only K3s without additional components
+
+- name: Install K3s Only
+  hosts: k3s_servers
+  gather_facts: yes
+  become: yes
+
+  pre_tasks:
+    - name: Display playbook information
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "K3s Installation Playbook"
+          - "=========================================="
+          - "Target Host: {{ inventory_hostname }}"
+          - "IP Address: {{ ansible_host }}"
+          - "K3s Version: {{ k3s_version }}"
+          - "Service Type: {{ k3s_service_type }}"
+          - "=========================================="
+      tags: always
+
+    - name: Check connectivity
+      ansible.builtin.ping:
+      tags: always
+
+    - name: Verify target OS
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian" or ansible_os_family == "RedHat"
+        fail_msg: "Unsupported OS family: {{ ansible_os_family }}"
+        success_msg: "OS family {{ ansible_os_family }} is supported"
+      tags: always
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      tags:
+        - prep
+        - k3s-install
+
+    - name: Install minimal dependencies
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+        state: present
+      when: ansible_os_family == "Debian"
+      tags:
+        - prep
+        - k3s-install
+
+    - name: Check if swap is enabled
+      ansible.builtin.command: swapon -s
+      register: swap_status
+      changed_when: false
+      failed_when: false
+      tags:
+        - prep
+        - k3s-install
+
+    - name: Disable swap for current session
+      ansible.builtin.command: swapoff -a
+      when:
+        - disable_swap | default(true) | bool
+        - swap_status.stdout != ""
+      tags:
+        - prep
+        - k3s-install
+
+    - name: Disable swap permanently in /etc/fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+      when: disable_swap | default(true) | bool
+      tags:
+        - prep
+        - k3s-install
+
+    - name: Enable IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+        state: present
+        reload: yes
+      tags:
+        - prep
+        - k3s-install
+
+  roles:
+    - role: k3s
+      tags:
+        - k3s
+        - k3s-install
+
+  post_tasks:
+    - name: Verify K3s installation
+      ansible.builtin.command: "{{ k3s_bin_dir }}/k3s --version"
+      register: k3s_verify
+      changed_when: false
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Display K3s version
+      ansible.builtin.debug:
+        msg: "{{ k3s_verify.stdout_lines }}"
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Get node status
+      ansible.builtin.command: "{{ k3s_bin_dir }}/kubectl get nodes -o wide"
+      register: node_status
+      changed_when: false
+      become: true
+      when: k3s_service_type == "server"
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Display node status
+      ansible.builtin.debug:
+        var: node_status.stdout_lines
+      when:
+        - k3s_service_type == "server"
+        - node_status is defined
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Get system pods
+      ansible.builtin.command: "{{ k3s_bin_dir }}/kubectl get pods -n kube-system"
+      register: system_pods
+      changed_when: false
+      become: true
+      when: k3s_service_type == "server"
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Display system pods
+      ansible.builtin.debug:
+        var: system_pods.stdout_lines
+      when:
+        - k3s_service_type == "server"
+        - system_pods is defined
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Check if Traefik is disabled
+      ansible.builtin.shell: |
+        {{ k3s_bin_dir }}/kubectl get deployments -n kube-system | grep -i traefik || echo "Traefik not found (disabled)"
+      register: traefik_check
+      changed_when: false
+      become: true
+      when: k3s_service_type == "server"
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Display Traefik status
+      ansible.builtin.debug:
+        msg: "{{ traefik_check.stdout_lines }}"
+      when:
+        - k3s_service_type == "server"
+        - traefik_check is defined
+      tags:
+        - validation
+        - k3s-install
+
+    - name: Get kubeconfig location
+      ansible.builtin.debug:
+        msg:
+          - "Kubeconfig has been saved to: {{ local_kubeconfig_file }}"
+          - "To use it, run: export KUBECONFIG={{ local_kubeconfig_file }}"
+          - "Or use: kubectl --kubeconfig={{ local_kubeconfig_file }} get nodes"
+      when:
+        - k3s_service_type == "server"
+        - fetch_kubeconfig | bool
+      tags:
+        - info
+        - k3s-install
+
+    - name: Display success message
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "K3s Installation Complete!"
+          - "=========================================="
+          - "Version: {{ k3s_version }}"
+          - "Node: {{ inventory_hostname }}"
+          - "API Server: https://{{ ansible_host }}:6443"
+          - ""
+          - "Verify with:"
+          - "  kubectl get nodes"
+          - "  kubectl get pods -n kube-system"
+          - "=========================================="
+      tags: always

@@ -1,0 +1,243 @@
+---
+# Main bootstrap playbook
+# Performs complete infrastructure setup including system prep, K3s, Helm, and optional Node.js
+
+- name: Bootstrap Infrastructure
+  hosts: k3s_servers
+  gather_facts: yes
+  become: yes
+
+  pre_tasks:
+    - name: Display playbook information
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Infrastructure Bootstrap Playbook"
+          - "=========================================="
+          - "Target Host: {{ inventory_hostname }}"
+          - "IP Address: {{ ansible_host }}"
+          - "K3s Version: {{ k3s_version }}"
+          - "Helm Version: {{ helm_version }}"
+          - "Install Helm: {{ install_helm }}"
+          - "Install Node.js: {{ install_nodejs }}"
+          - "=========================================="
+      tags: always
+
+    - name: Verify Ansible version
+      ansible.builtin.assert:
+        that:
+          - ansible_version.full is version('2.10', '>=')
+        fail_msg: "Ansible version must be 2.10 or higher"
+        success_msg: "Ansible version {{ ansible_version.full }} is supported"
+      run_once: true
+      tags: always
+
+    - name: Verify target OS is supported
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian" or ansible_os_family == "RedHat"
+        fail_msg: "Unsupported OS family: {{ ansible_os_family }}"
+        success_msg: "OS family {{ ansible_os_family }} is supported"
+      tags: always
+
+    - name: Check connectivity to target hosts
+      ansible.builtin.ping:
+      tags: always
+
+  roles:
+    - role: system-prep
+      tags:
+        - system-prep
+        - bootstrap
+
+    - role: k3s
+      tags:
+        - k3s
+        - bootstrap
+
+    - role: helm
+      when: install_helm | bool
+      tags:
+        - helm
+        - bootstrap
+
+    - role: node
+      when: install_nodejs | bool
+      tags:
+        - node
+        - bootstrap
+
+  post_tasks:
+    - name: Wait for all pods to be ready
+      ansible.builtin.shell: |
+        {{ k3s_bin_dir }}/kubectl wait --for=condition=Ready pods --all --all-namespaces --timeout=300s
+      register: pods_ready
+      failed_when: false
+      changed_when: false
+      become: true
+      when: k3s_service_type == "server"
+      tags:
+        - validation
+        - bootstrap
+
+    - name: Get all pods status
+      ansible.builtin.command: "{{ k3s_bin_dir }}/kubectl get pods --all-namespaces"
+      register: all_pods
+      changed_when: false
+      become: true
+      when: k3s_service_type == "server"
+      tags:
+        - validation
+        - bootstrap
+
+    - name: Display all pods
+      ansible.builtin.debug:
+        var: all_pods.stdout_lines
+      when:
+        - k3s_service_type == "server"
+        - all_pods is defined
+      tags:
+        - validation
+        - bootstrap
+
+    - name: Get cluster components status
+      ansible.builtin.command: "{{ k3s_bin_dir }}/kubectl get componentstatuses"
+      register: component_status
+      changed_when: false
+      failed_when: false
+      become: true
+      when: k3s_service_type == "server"
+      tags:
+        - validation
+        - bootstrap
+
+    - name: Display component status
+      ansible.builtin.debug:
+        var: component_status.stdout_lines
+      when:
+        - k3s_service_type == "server"
+        - component_status is defined
+        - component_status.rc == 0
+      tags:
+        - validation
+        - bootstrap
+
+    - name: Create kubeconfig usage instructions file
+      ansible.builtin.copy:
+        content: |
+          # Kubeconfig Setup Instructions
+
+          ## Using the kubeconfig file
+
+          The K3s kubeconfig has been fetched and merged into your local kubeconfig.
+
+          ### Verify access to the cluster:
+          ```bash
+          kubectl config get-contexts
+          kubectl config use-context default
+          kubectl get nodes
+          kubectl get pods --all-namespaces
+          ```
+
+          ### If you need to manually set the kubeconfig:
+          ```bash
+          export KUBECONFIG={{ local_kubeconfig_file }}
+          ```
+
+          ### Add to your shell profile for persistence:
+          ```bash
+          echo 'export KUBECONFIG={{ local_kubeconfig_file }}' >> ~/.bashrc
+          source ~/.bashrc
+          ```
+
+          ## Cluster Information
+          - K3s Version: {{ k3s_version }}
+          - Server: https://{{ ansible_host }}:6443
+          - Node: {{ inventory_hostname }}
+
+          ## Useful Commands
+          ```bash
+          # Check cluster status
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+          # Check system pods
+          kubectl get pods -n kube-system
+
+          # Install an application (example)
+          kubectl create deployment nginx --image=nginx
+          kubectl expose deployment nginx --port=80 --type=NodePort
+          ```
+
+          ## Helm Usage
+          {% if install_helm %}
+          Helm {{ helm_version }} has been installed.
+
+          ```bash
+          # List repositories
+          helm repo list
+
+          # Search for charts
+          helm search repo nginx
+
+          # Install a chart
+          helm install my-release bitnami/nginx
+          ```
+          {% else %}
+          Helm was not installed. Set install_helm: true to install Helm.
+          {% endif %}
+
+          ## Node.js
+          {% if install_nodejs %}
+          Node.js version {{ nodejs_version }} has been installed.
+          {% else %}
+          Node.js was not installed. Set install_nodejs: true to install Node.js.
+          {% endif %}
+        dest: /tmp/kubeconfig-instructions-{{ inventory_hostname }}.txt
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags:
+        - documentation
+        - bootstrap
+
+    - name: Display success message
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "Bootstrap Complete!"
+          - "=========================================="
+          - "K3s cluster is ready"
+          - "Kubeconfig: {{ local_kubeconfig_file }}"
+          - "Instructions: /tmp/kubeconfig-instructions-{{ inventory_hostname }}.txt"
+          - ""
+          - "Next steps:"
+          - "  1. Verify cluster: kubectl get nodes"
+          - "  2. Check pods: kubectl get pods --all-namespaces"
+          - "  3. Install applications using Helm or kubectl"
+          - "=========================================="
+      tags: always
+
+    - name: Save bootstrap summary
+      ansible.builtin.copy:
+        content: |
+          Infrastructure Bootstrap Summary
+          ================================
+          Date: {{ ansible_date_time.iso8601 }}
+          Host: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+
+          Components Installed:
+          - System Prep: Complete
+          - K3s: {{ k3s_version }}
+          - Helm: {{ helm_version if install_helm else 'Not installed' }}
+          - Node.js: {{ nodejs_version if install_nodejs else 'Not installed' }}
+
+          Cluster Status:
+          {{ all_pods.stdout if all_pods is defined else 'N/A' }}
+        dest: /tmp/bootstrap-summary-{{ inventory_hostname }}.txt
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+      tags: always
