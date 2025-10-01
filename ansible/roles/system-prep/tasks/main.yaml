@@ -44,6 +44,65 @@
     - system-prep
     - python
 
+- name: Install Python packages via pip
+  ansible.builtin.pip:
+    name: "{{ python_packages }}"
+    state: present
+    extra_args: --break-system-packages
+  become: true
+  tags:
+    - system-prep
+    - python
+
+- name: Install kubeseal CLI
+  block:
+    - name: Check if kubeseal is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/kubeseal
+      register: kubeseal_binary
+
+    - name: Download kubeseal
+      ansible.builtin.get_url:
+        url: https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.24.5/kubeseal-0.24.5-linux-amd64.tar.gz
+        dest: /tmp/kubeseal.tar.gz
+        mode: '0644'
+      when: not kubeseal_binary.stat.exists
+
+    - name: Create temporary directory for kubeseal extraction
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: kubeseal
+      register: kubeseal_temp_dir
+      when: not kubeseal_binary.stat.exists
+
+    - name: Extract kubeseal
+      ansible.builtin.unarchive:
+        src: /tmp/kubeseal.tar.gz
+        dest: "{{ kubeseal_temp_dir.path }}"
+        remote_src: yes
+      when: not kubeseal_binary.stat.exists
+
+    - name: Install kubeseal binary
+      ansible.builtin.copy:
+        src: "{{ kubeseal_temp_dir.path }}/kubeseal"
+        dest: /usr/local/bin/kubeseal
+        mode: '0755'
+        remote_src: yes
+      become: true
+      when: not kubeseal_binary.stat.exists
+
+    - name: Clean up kubeseal temporary files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/kubeseal.tar.gz
+        - "{{ kubeseal_temp_dir.path }}"
+      when: not kubeseal_binary.stat.exists
+  tags:
+    - system-prep
+    - kubeseal
+
 - name: Set timezone
   community.general.timezone:
     name: "{{ system_timezone }}"

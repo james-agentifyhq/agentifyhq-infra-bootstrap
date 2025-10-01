@@ -73,6 +73,7 @@ system_packages:
   - python3-pip
   - jq
   - cron
+  - apache2-utils
 
 # Python packages
 python_packages:
